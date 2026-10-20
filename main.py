@@ -1,56 +1,66 @@
+
 import os
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from langchain_openrouter import ChatOpenRouter
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 
 
 load_dotenv()
 
+api_key = os.getenv("OPENROUTER_API_KEY")
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
+if not api_key:
+    raise ValueError("OPENROUTER_API_KEY is missing from .env")
+
+
+# 1. Configure the model
+model = ChatOpenRouter(
+    model="openrouter/free",
+    api_key=api_key,
+    temperature=0,
 )
 
-messages = [
-    {
-        "role": "system",
-        "content": "You are a helpful AI assistant. Explain technical concepts simply."
-    }
-]
+
+# 2. Define the prompt template
+prompt = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        "You are a helpful AI assistant. "
+        "Explain technical concepts simply, with examples."
+    ),
+    (
+        "human",
+        "{question}"
+    ),
+])
+
+
+# 3. Define the output parser
+parser = StrOutputParser()
+
+
+# 4. Connect the components
+chain = prompt | model | parser
+
+
+# 5. Run the chat loop
 while True:
-    query = input("\nYou: ")
+    query = input("\nYou: ").strip()
 
     if query.lower() == "exit":
         break
 
-    messages.append({
-        "role": "user",
-        "content": query
-    })
+    if not query:
+        continue
 
-    stream = client.chat.completions.create(
-        model="openrouter/free",
-        messages=messages,
-        stream=True
-    )
+    try:
+        answer = chain.invoke({
+            "question": query
+        })
 
-    print("AI: ", end="", flush=True)
+        print("\nAI:", answer)
 
-    assistant_message = ""
-
-    for chunk in stream:
-        content = chunk.choices[0].delta.content
-
-        if content:
-            print(content, end="", flush=True)
-            assistant_message += content
-
-    print()
-
-    messages.append({
-        "role": "assistant",
-        "content": assistant_message
-    })
-
-    print("AI:", chunk.choices[0].delta.content)
+    except Exception as error:
+        print(f"\nRequest failed: {error}")

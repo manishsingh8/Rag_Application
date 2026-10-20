@@ -1,0 +1,11 @@
+MongoDB is a NoSQL database that stores data in flexible, JSON-like documents. Documents are grouped into collections.
+
+Indexes improve query performance by allowing MongoDB to find documents without scanning every document in a collection. However, indexes require additional storage and can increase the cost of write operations.
+
+Replication maintains multiple copies of data across different servers. A replica set typically has a primary node that accepts writes and secondary nodes that replicate the primary's data. Replication helps provide redundancy and high availability.
+
+Sharding distributes data across multiple machines. It allows a MongoDB deployment to scale horizontally when a single server cannot handle the data volume or workload.
+
+Redis is an in-memory data store commonly used for caching, session storage, and fast data access. Because it primarily serves data from memory, it can provide very low-latency operations.
+
+Database health checks can monitor server availability, connection failures, replication lag, disk utilization, memory usage, and query performance. Automated systems can collect these metrics and alert engineers when thresholds are exceeded.
