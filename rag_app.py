@@ -46,7 +46,13 @@ def generate_query_embedding(question: str) -> list[float]:
 
 
 # 5. Retrieve relevant chunks from Chroma
-def retrieve_context(question: str, top_k: int = 3) -> list[str]:
+
+def retrieve_context(
+    question: str,
+    top_k: int = 3,
+    max_distance: float = 0.60
+) -> list[str]:
+
     if collection.count() == 0:
         return []
 
@@ -55,22 +61,29 @@ def retrieve_context(question: str, top_k: int = 3) -> list[str]:
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=min(top_k, collection.count()),
-        include=["documents", "distances"],
+        include=["documents", "metadatas", "distances"]
     )
 
-    documents = results["documents"][0] if results["documents"] else []
+    documents = results["documents"][0]
+    distances = results["distances"][0]
 
-    # Optional: inspect retrieval results while learning
-    distances = results["distances"][0] if results["distances"] else []
+    relevant_chunks = []
 
-    for index, document in enumerate(documents):
-        print(
-            f"\nRetrieved chunk {index + 1} "
-            f"(cosine distance: {distances[index]:.4f})"
-        )
-        print(document)
+    print("\n--- Retrieval Results ---")
 
-    return documents
+    for document, distance in zip(documents, distances):
+        print(f"\nCosine distance: {distance:.4f}")
+
+        if distance <= max_distance:
+            print("Status: Accepted")
+            relevant_chunks.append(document)
+        else:
+            print("Status: Rejected (below relevance requirement)")
+
+    print(f"\nAccepted {len(relevant_chunks)} of {len(documents)} chunks.")
+
+    return relevant_chunks
+
 
 
 # 6. Pass retrieved context to the LLM
