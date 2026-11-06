@@ -1,11 +1,1067 @@
-MongoDB is a NoSQL database that stores data in flexible, JSON-like documents. Documents are grouped into collections.
+# MongoDB Complete Knowledge Base
 
-Indexes improve query performance by allowing MongoDB to find documents without scanning every document in a collection. However, indexes require additional storage and can increase the cost of write operations.
+## 1. Introduction to MongoDB
 
-Replication maintains multiple copies of data across different servers. A replica set typically has a primary node that accepts writes and secondary nodes that replicate the primary's data. Replication helps provide redundancy and high availability.
+MongoDB is a NoSQL, document-oriented database that stores data in flexible, JSON-like documents. Internally, MongoDB stores documents in BSON (Binary JSON) format, which supports additional data types such as dates, ObjectId, and binary data.
 
-Sharding distributes data across multiple machines. It allows a MongoDB deployment to scale horizontally when a single server cannot handle the data volume or workload.
+MongoDB is designed for flexible schemas, scalability, high availability, and efficient data access.
 
-Redis is an in-memory data store commonly used for caching, session storage, and fast data access. Because it primarily serves data from memory, it can provide very low-latency operations.
+### Important MongoDB terminology
 
-Database health checks can monitor server availability, connection failures, replication lag, disk utilization, memory usage, and query performance. Automated systems can collect these metrics and alert engineers when thresholds are exceeded.
+- **Database:** A logical container for collections.
+- **Collection:** A group of related documents, similar to a table in relational databases.
+- **Document:** An individual record stored as key-value pairs, similar to a JSON object.
+- **Field:** A key-value pair inside a document.
+- **BSON:** Binary representation of JSON used internally by MongoDB.
+- **ObjectId:** A commonly used unique identifier automatically generated for the `_id` field.
+
+### Example document
+
+```json
+{
+  "_id": "ObjectId('64a123456789abcdef123456')",
+  "name": "Manish",
+  "age": 29,
+  "email": "manish@example.com",
+  "skills": ["React", "Node.js", "MongoDB"],
+  "address": {
+    "city": "Varanasi",
+    "country": "India"
+  }
+}
+```
+
+MongoDB allows documents in the same collection to have different structures, although schema validation can be configured to enforce data rules.
+
+## 2. MongoDB vs SQL Databases
+
+SQL databases are relational databases that generally organize data into tables, rows, and columns. MongoDB is a document-oriented database that organizes data into collections and documents.
+
+Important differences:
+
+- SQL databases commonly use predefined schemas, whereas MongoDB supports flexible document structures.
+- SQL databases use joins to combine related records. MongoDB supports embedding and referencing, as well as aggregation operations such as `$lookup`.
+- SQL databases typically use normalized relational models. MongoDB often uses embedded documents and denormalized data based on application access patterns.
+- SQL databases are suitable for many applications requiring relational consistency and complex joins.
+- MongoDB is useful when flexible data models, document-based access, and horizontal scalability are important.
+
+MongoDB also supports transactions, so it is not limited to applications that can tolerate inconsistent multi-document operations.
+
+## 3. CRUD Operations
+
+CRUD stands for Create, Read, Update, and Delete. These are the four fundamental operations used to manage data in MongoDB.
+
+### Create
+
+The `insertOne()` method inserts a single document.
+
+```javascript
+db.users.insertOne({
+  name: "Manish",
+  age: 29,
+  role: "Developer"
+});
+```
+
+The `insertMany()` method inserts multiple documents.
+
+```javascript
+db.users.insertMany([
+  { name: "Amit", age: 27 },
+  { name: "Rahul", age: 30 }
+]);
+```
+
+### Read
+
+The `find()` method retrieves documents matching a condition.
+
+```javascript
+db.users.find({ age: 29 });
+```
+
+The `findOne()` method retrieves one matching document.
+
+```javascript
+db.users.findOne({ name: "Manish" });
+```
+
+### Update
+
+The `updateOne()` method updates the first matching document.
+
+```javascript
+db.users.updateOne(
+  { name: "Manish" },
+  { $set: { age: 30 } }
+);
+```
+
+The `updateMany()` method updates all matching documents.
+
+```javascript
+db.users.updateMany(
+  { role: "Developer" },
+  { $set: { active: true } }
+);
+```
+
+### Delete
+
+The `deleteOne()` method deletes one matching document.
+
+```javascript
+db.users.deleteOne({ name: "Manish" });
+```
+
+The `deleteMany()` method deletes all matching documents.
+
+```javascript
+db.users.deleteMany({ active: false });
+```
+
+## 4. MongoDB Data Types
+
+MongoDB supports multiple BSON data types.
+
+Important data types include:
+
+- String: Stores text values.
+- Double: Stores floating-point numbers.
+- Int32: Stores 32-bit integers.
+- Int64: Stores 64-bit integers.
+- Boolean: Stores true or false.
+- Object: Stores embedded documents.
+- Array: Stores lists of values.
+- ObjectId: Stores unique document identifiers.
+- Date: Stores date and time values.
+- Null: Represents a null value.
+- Binary Data: Stores binary information.
+- Decimal128: Stores high-precision decimal numbers.
+
+Choosing appropriate data types helps maintain data accuracy and improve application reliability.
+
+## 5. MongoDB Schema Design
+
+MongoDB supports flexible schemas, but good schema design is important for application performance and maintainability.
+
+There are two primary ways to model relationships.
+
+### Embedded Documents
+
+Embedded documents store related data inside the same document.
+
+```json
+{
+  "name": "Manish",
+  "address": {
+    "city": "Varanasi",
+    "country": "India"
+  }
+}
+```
+
+Advantages:
+
+- Related data can be retrieved in a single query.
+- Reduces the need for joins or additional queries.
+- Useful when related data is frequently accessed together.
+
+Disadvantages:
+
+- Documents can become large.
+- Frequently changing embedded information can increase update complexity.
+- Unbounded arrays can create performance and document-size problems.
+
+### Referenced Documents
+
+Referenced documents store related data separately and connect them using identifiers.
+
+Users collection:
+
+```json
+{
+  "_id": 1,
+  "name": "Manish"
+}
+```
+
+Orders collection:
+
+```json
+{
+  "_id": 101,
+  "userId": 1,
+  "amount": 500
+}
+```
+
+Advantages:
+
+- Avoids duplicating large amounts of data.
+- Useful for complex relationships.
+- Allows related data to be managed independently.
+
+Disadvantages:
+
+- May require multiple queries or aggregation with `$lookup`.
+- Can increase application complexity.
+
+The choice between embedding and referencing depends on access patterns, data relationships, update frequency, and expected document growth.
+
+## 6. MongoDB Indexes
+
+Indexes improve query performance by allowing MongoDB to locate matching documents without scanning every document in a collection.
+
+Without an appropriate index, MongoDB may perform a collection scan (`COLLSCAN`). With a suitable index, it may use an index scan (`IXSCAN`).
+
+### Types of indexes
+
+1. Single Field Index: Indexes one field.
+
+```javascript
+db.users.createIndex({ email: 1 });
+```
+
+2. Compound Index: Indexes multiple fields.
+
+```javascript
+db.users.createIndex({ age: 1, name: 1 });
+```
+
+3. Multikey Index: Automatically indexes array values.
+
+```javascript
+db.users.createIndex({ skills: 1 });
+```
+
+4. Text Index: Supports text search on indexed string fields.
+
+```javascript
+db.articles.createIndex({ title: "text", content: "text" });
+```
+
+5. Unique Index: Prevents duplicate values for the indexed key.
+
+```javascript
+db.users.createIndex({ email: 1 }, { unique: true });
+```
+
+6. TTL Index: Automatically removes documents after a specified time.
+
+```javascript
+db.sessions.createIndex(
+  { createdAt: 1 },
+  { expireAfterSeconds: 3600 }
+);
+```
+
+7. Geospatial Index: Supports location-based queries.
+
+MongoDB provides `2dsphere` indexes for queries involving spherical geographic data.
+
+### Advantages of indexes
+
+- Faster query execution.
+- Efficient sorting and filtering.
+- Better performance for frequently accessed fields.
+
+### Disadvantages of indexes
+
+- Require additional disk storage.
+- Increase the cost of insert, update, and delete operations because indexes may need maintenance.
+- Too many indexes can negatively affect overall performance.
+
+### Compound Index and Field Order
+
+The order of fields in a compound index matters.
+
+For example:
+
+```javascript
+db.orders.createIndex({
+  status: 1,
+  createdAt: -1
+});
+```
+
+This index is useful for queries filtering by `status` and sorting by `createdAt`.
+
+MongoDB's compound index design commonly follows the Equality, Sort, Range (ESR) guideline.
+
+### Index Performance Analysis
+
+The `explain()` method helps analyze query execution.
+
+```javascript
+db.users.find({ email: "manish@example.com" }).explain("executionStats");
+```
+
+Important execution statistics:
+
+- `COLLSCAN`: MongoDB scans documents in the collection.
+- `IXSCAN`: MongoDB uses an index.
+- `totalDocsExamined`: Number of documents examined.
+- `totalKeysExamined`: Number of index keys examined.
+- `executionTimeMillis`: Query execution time.
+
+A good index should reduce unnecessary document examination while balancing storage and write costs.
+
+## 7. MongoDB Aggregation Pipeline
+
+The aggregation pipeline processes documents through multiple stages to transform, filter, group, and analyze data.
+
+Each stage receives documents from the previous stage and passes its output to the next stage.
+
+### Important aggregation stages
+
+- `$match`: Filters documents.
+- `$group`: Groups documents and performs calculations.
+- `$project`: Selects or reshapes fields.
+- `$sort`: Sorts documents.
+- `$limit`: Limits the number of returned documents.
+- `$skip`: Skips a specified number of documents.
+- `$unwind`: Deconstructs an array into separate documents.
+- `$lookup`: Performs a left outer join with another collection.
+- `$count`: Counts documents.
+- `$addFields`: Adds or modifies fields.
+
+### Example aggregation
+
+Find the total order amount for each user:
+
+```javascript
+db.orders.aggregate([
+  {
+    $match: { status: "completed" }
+  },
+  {
+    $group: {
+      _id: "$userId",
+      totalAmount: { $sum: "$amount" },
+      totalOrders: { $sum: 1 }
+    }
+  },
+  {
+    $sort: { totalAmount: -1 }
+  }
+]);
+```
+
+Aggregation is useful for reporting, analytics, dashboards, data transformations, and complex queries.
+
+## 8. MongoDB Replication and Replica Sets
+
+Replication maintains multiple copies of data across different MongoDB servers.
+
+A replica set is a group of MongoDB servers that maintain the same dataset.
+
+### Replica set components
+
+- Primary: The primary node receives write operations.
+- Secondary: Secondary nodes replicate changes from the primary through the replication process.
+- Arbiter: An optional member that participates in elections but does not store data.
+
+### How replication works
+
+1. Applications send writes to the primary node.
+2. The primary records changes in its operation log (oplog).
+3. Secondary nodes replicate and apply those changes.
+4. If the primary becomes unavailable, eligible members can participate in an election.
+5. An eligible secondary may become the new primary.
+
+### Advantages
+
+- High availability.
+- Data redundancy.
+- Automatic failover.
+- Improved disaster recovery options.
+
+### Important concepts
+
+**Oplog:** A capped collection that records operations performed on the primary so secondary nodes can replicate changes.
+
+**Replication Lag:** The delay between an operation being applied on the primary and being replicated on a secondary.
+
+**Automatic Failover:** The process of electing a new primary when the current primary becomes unavailable.
+
+**Read Preference:** Determines which replica set members can serve read operations.
+
+**Write Concern:** Specifies the level of acknowledgment required for write operations.
+
+**Read Concern:** Controls the consistency and isolation properties of data returned by read operations.
+
+Replication does not automatically mean every read is strongly consistent. Applications should choose appropriate read and write concerns based on their requirements.
+
+## 9. MongoDB Sharding
+
+Sharding distributes data across multiple machines to support horizontal scaling.
+
+It is useful when a single server cannot efficiently handle the application's data volume, storage requirements, or workload.
+
+### Important components
+
+- Shard: Stores a portion of the sharded dataset.
+- Shard Key: Determines how documents are distributed across shards.
+- Config Servers: Store cluster metadata and configuration.
+- `mongos`: Acts as a query router between applications and shards.
+
+### How sharding works
+
+1. An administrator selects a shard key.
+2. MongoDB distributes data across shards based on the sharding strategy.
+3. Applications send queries to `mongos`.
+4. `mongos` routes queries to the appropriate shards.
+5. Results are returned to the application.
+
+### Sharding strategies
+
+**Range-Based Sharding:** Distributes documents based on ranges of shard-key values.
+
+**Hashed Sharding:** Uses a hash of the shard-key value to distribute documents.
+
+**Zone-Based Sharding:** Assigns specific ranges of shard-key values to defined zones.
+
+### Advantages
+
+- Horizontal scalability.
+- Increased storage capacity.
+- Distribution of workload across servers.
+- Ability to handle large datasets.
+
+### Challenges
+
+- Choosing an appropriate shard key is critical.
+- Poor shard-key selection can cause uneven data distribution.
+- Queries that do not target the shard key may require scatter-gather operations.
+- Cluster administration becomes more complex.
+
+## 10. MongoDB Transactions and ACID Properties
+
+A transaction is a sequence of database operations that must satisfy defined consistency requirements.
+
+MongoDB supports atomic operations at the single-document level and multi-document transactions when multiple documents or collections need to be updated together.
+
+### ACID properties
+
+**Atomicity:** All operations in a transaction succeed together or the transaction is rolled back.
+
+**Consistency:** Transactions preserve database constraints and application-defined invariants.
+
+**Isolation:** Concurrent transactions are isolated according to MongoDB's transaction and read-concern semantics.
+
+**Durability:** Committed changes are persisted according to the configured write concern and storage guarantees.
+
+### Example transaction
+
+```javascript
+const session = db.getMongo().startSession();
+
+try {
+  const sessionDb = session.getDatabase("bank");
+
+  session.startTransaction();
+
+  sessionDb.accounts.updateOne(
+    { accountId: 1 },
+    { $inc: { balance: -500 } }
+  );
+
+  sessionDb.accounts.updateOne(
+    { accountId: 2 },
+    { $inc: { balance: 500 } }
+  );
+
+  session.commitTransaction();
+} catch (error) {
+  session.abortTransaction();
+  throw error;
+} finally {
+  session.endSession();
+}
+```
+
+Transactions are useful for operations such as transferring money between accounts or updating multiple related records that must remain consistent.
+
+## 11. MongoDB Atomicity
+
+Atomicity means an operation is completed entirely or not at all.
+
+MongoDB guarantees atomicity for writes to a single document, including updates to multiple fields within that document.
+
+For example:
+
+```javascript
+db.accounts.updateOne(
+  { accountId: 1 },
+  {
+    $inc: { balance: -500 },
+    $set: { updatedAt: new Date() }
+  }
+);
+```
+
+Both modifications are part of one atomic document update.
+
+For operations involving multiple documents, use a multi-document transaction when atomicity across those documents is required.
+
+## 12. MongoDB Write and Read Operations
+
+MongoDB provides different options to control how data is written and read.
+
+### Write Concern
+
+Write concern specifies how many members of a replica set must acknowledge a write.
+
+Examples:
+
+- `w: 1`: The primary acknowledges the write.
+- `w: "majority"`: A majority of voting data-bearing members acknowledge the write.
+- `j: true`: Requests acknowledgment that the write has been written to the journal, subject to the deployment's configuration.
+
+### Read Preference
+
+Read preference determines which replica set members can serve read operations.
+
+Common options:
+
+- `primary`: Read only from the primary.
+- `primaryPreferred`: Prefer the primary, but use a secondary when necessary.
+- `secondary`: Read only from secondary nodes.
+- `secondaryPreferred`: Prefer secondaries, but fall back to the primary.
+- `nearest`: Read from a suitable member with relatively low network latency.
+
+Reading from secondaries can distribute read workload, but applications may observe replication lag.
+
+## 13. MongoDB Connection Pooling
+
+Connection pooling maintains a reusable collection of database connections between an application and MongoDB.
+
+Instead of opening and closing a new database connection for every request, an application reuses existing connections.
+
+### Advantages
+
+- Reduces connection establishment overhead.
+- Improves application performance.
+- Handles concurrent requests more efficiently.
+- Reduces unnecessary connection creation.
+
+### Example using Mongoose
+
+```javascript
+import mongoose from "mongoose";
+
+await mongoose.connect(process.env.MONGODB_URI, {
+  maxPoolSize: 50,
+  minPoolSize: 5,
+  serverSelectionTimeoutMS: 5000
+});
+```
+
+Pool size should be configured according to application concurrency, database capacity, and deployment requirements.
+
+## 14. MongoDB Performance Optimization
+
+Database performance optimization involves reducing query execution time, avoiding unnecessary resource consumption, and designing efficient data access patterns.
+
+Important techniques:
+
+1. Create indexes on frequently queried fields.
+2. Use compound indexes for common filtering and sorting patterns.
+3. Analyze queries using `explain("executionStats")`.
+4. Avoid unnecessary collection scans.
+5. Retrieve only required fields using projections.
+6. Use pagination for large result sets.
+7. Avoid unbounded arrays inside documents.
+8. Choose embedding or referencing based on application access patterns.
+9. Avoid unnecessary indexes because they increase write overhead.
+10. Monitor slow queries and database resource utilization.
+11. Use connection pooling.
+12. Avoid expensive aggregation stages when they are unnecessary.
+13. Design shard keys carefully for large distributed deployments.
+14. Use caching for frequently accessed data when appropriate.
+
+### Projection Example
+
+Retrieve only the name and email fields:
+
+```javascript
+db.users.find(
+  { active: true },
+  { name: 1, email: 1, _id: 0 }
+);
+```
+
+Projection reduces unnecessary data transfer between MongoDB and the application.
+
+### Pagination Example
+
+```javascript
+db.users.find()
+  .sort({ createdAt: -1 })
+  .skip(20)
+  .limit(10);
+```
+
+For very large datasets, range-based pagination using indexed fields is generally more efficient than large `skip()` values.
+
+## 15. MongoDB Backup and Recovery
+
+Backup and recovery protect data against accidental deletion, hardware failures, corruption, and other incidents.
+
+Important approaches:
+
+- `mongodump`: Creates a logical backup of MongoDB data.
+- `mongorestore`: Restores data from a logical backup.
+- Filesystem snapshots: Capture database files using a supported consistent snapshot procedure.
+- Point-in-Time Recovery: Allows recovery to a specific point in time when supported backup and oplog processes are configured.
+
+Example:
+
+```bash
+mongodump --uri="mongodb://localhost:27017/mydb" --out="./backup"
+```
+
+Restore:
+
+```bash
+mongorestore --uri="mongodb://localhost:27017" ./backup
+```
+
+A backup strategy should include retention policies, secure storage, regular restore testing, and recovery-time objectives.
+
+## 16. MongoDB Change Streams
+
+Change Streams allow applications to subscribe to database changes in real time.
+
+Applications can listen for insert, update, replace, and delete events.
+
+Example:
+
+```javascript
+const changeStream = db.orders.watch();
+
+changeStream.on("change", (event) => {
+  console.log("Database change:", event);
+});
+```
+
+Common use cases:
+
+- Real-time notifications.
+- Synchronizing data between services.
+- Event-driven architectures.
+- Updating dashboards.
+- Triggering background processing.
+
+Change Streams are supported on replica sets and sharded clusters.
+
+## 17. MongoDB Security
+
+Database security protects sensitive information from unauthorized access and modification.
+
+Important security practices:
+
+1. Enable authentication.
+2. Use role-based access control (RBAC).
+3. Apply the principle of least privilege.
+4. Enable TLS for network communication.
+5. Encrypt sensitive data at rest.
+6. Use network restrictions and firewall rules.
+7. Store credentials securely in environment variables or secret managers.
+8. Audit database access and security events where appropriate.
+9. Keep MongoDB versions and patches updated.
+10. Avoid exposing database ports directly to the public internet.
+
+### Role-Based Access Control
+
+RBAC assigns permissions through roles rather than granting every user unrestricted access.
+
+For example, an application user might only have read and write access to a particular database, while an administrator has additional privileges.
+
+## 18. MongoDB Monitoring and Database Health Checks
+
+Database health checks monitor the availability, performance, resource consumption, and reliability of MongoDB deployments.
+
+Important health-check metrics include:
+
+**Server Availability:** Checks whether MongoDB instances are reachable and responding.
+
+**Connection Count:** Monitors active connections and connection utilization.
+
+**Replication Lag:** Measures how far secondary nodes are behind the primary.
+
+**Disk Utilization:** Monitors available disk space and storage consumption.
+
+**Memory Usage:** Tracks RAM utilization and WiredTiger cache behavior.
+
+**Query Performance:** Monitors slow queries, execution time, and query plans.
+
+**Operation Metrics:** Tracks insert, update, delete, and read operations.
+
+**Locking and Contention:** Helps identify workload contention and concurrency issues.
+
+**Replication State:** Verifies replica set member health and primary availability.
+
+**Backup Status:** Checks whether scheduled backups are completing successfully.
+
+### MongoDB Health-Check Commands
+
+```javascript
+db.adminCommand({ ping: 1 });
+```
+
+Checks whether the MongoDB server responds.
+
+```javascript
+db.serverStatus();
+```
+
+Returns server statistics, including connections, memory, operations, and storage-engine metrics.
+
+```javascript
+rs.status();
+```
+
+Returns replica set status and member information.
+
+```javascript
+db.currentOp();
+```
+
+Displays information about currently running operations.
+
+```javascript
+db.stats();
+```
+
+Returns database-level statistics.
+
+```javascript
+db.collection.stats();
+```
+
+Returns collection-level statistics.
+
+### Automated Database Health Monitoring
+
+An automated monitoring system can periodically collect database metrics, compare them with configured thresholds, and trigger alerts when problems occur.
+
+For example:
+
+- If connection utilization exceeds 80%, generate an alert.
+- If replication lag becomes too high, notify the database team.
+- If disk utilization exceeds a configured threshold, trigger a capacity alert.
+- If query execution time increases significantly, investigate slow queries.
+- If the primary node becomes unavailable, trigger an incident notification.
+
+Thresholds should be based on workload baselines and service-level objectives rather than arbitrary fixed values.
+
+## 19. MongoDB Failure Handling and High Availability
+
+Production applications must handle database failures gracefully.
+
+Important failure scenarios include:
+
+- Primary node failure.
+- Network interruption.
+- Connection timeout.
+- Connection pool exhaustion.
+- Replication lag.
+- Disk space exhaustion.
+- Slow queries.
+- Database unavailability.
+
+### Recommended handling strategies
+
+1. Configure connection timeouts.
+2. Use retry logic for transient failures.
+3. Use exponential backoff to avoid overwhelming the database.
+4. Retry only operations that are safe to retry.
+5. Use idempotency mechanisms where necessary.
+6. Monitor replica set health.
+7. Implement circuit breakers when appropriate.
+8. Log database errors with useful diagnostic information.
+9. Alert engineers when critical thresholds are exceeded.
+
+### Retry Example
+
+```javascript
+async function executeWithRetry(operation, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (attempt === maxRetries) {
+        throw error;
+      }
+
+      const delay = 1000 * Math.pow(2, attempt - 1);
+
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+```
+
+This is a simplified retry example. Production retry logic should distinguish transient errors from permanent errors and account for operation idempotency and MongoDB driver retryable-write behavior.
+
+## 20. MongoDB Storage Engine and WiredTiger
+
+WiredTiger is MongoDB's default storage engine.
+
+It manages how data is stored, accessed, cached, and persisted on disk.
+
+Important features:
+
+- Document-level concurrency control.
+- Compression to reduce storage requirements.
+- Internal caching to improve read performance.
+- Checkpointing to persist consistent data states.
+- Journaling to support recovery after unexpected shutdowns.
+
+The WiredTiger cache stores frequently accessed database pages in memory. MongoDB also uses the operating system's filesystem cache, so total memory usage should be understood in the context of both.
+
+## 21. MongoDB Capped Collections
+
+A capped collection is a fixed-size collection that maintains insertion order.
+
+When the collection reaches its configured size, older documents are overwritten as new documents are inserted.
+
+Example:
+
+```javascript
+db.createCollection("logs", {
+  capped: true,
+  size: 100000
+});
+```
+
+Common use cases include logging and storing bounded historical records.
+
+## 22. MongoDB Views
+
+A view is a read-only queryable object based on an aggregation pipeline over an existing collection or another view.
+
+Views do not store their own copy of the result documents.
+
+Example:
+
+```javascript
+db.createView(
+  "activeUsers",
+  "users",
+  [
+    { $match: { active: true } },
+    { $project: { name: 1, email: 1 } }
+  ]
+);
+```
+
+Views are useful for simplifying frequently used queries and presenting a controlled data shape to applications.
+
+## 23. MongoDB GridFS
+
+GridFS is a specification for storing and retrieving files larger than MongoDB's 16 MiB BSON document size limit.
+
+It divides files into smaller chunks and stores file metadata separately.
+
+Common use cases include:
+
+- Large documents.
+- Images.
+- Videos.
+- Audio files.
+
+For many applications, object storage services are also worth considering for large binary files.
+
+## 24. MongoDB `$lookup` and Joins
+
+MongoDB supports join-like behavior through the `$lookup` aggregation stage.
+
+Example:
+
+```javascript
+db.orders.aggregate([
+  {
+    $lookup: {
+      from: "users",
+      localField: "userId",
+      foreignField: "_id",
+      as: "userDetails"
+    }
+  }
+]);
+```
+
+This operation matches the `userId` field in orders with the `_id` field in users and adds the matching user documents to `userDetails`.
+
+`$lookup` is useful when related information is stored in separate collections, although embedding may be more efficient for frequently accessed related data.
+
+## 25. MongoDB Atlas
+
+MongoDB Atlas is MongoDB's managed cloud database service.
+
+It simplifies database deployment, monitoring, scaling, backups, and security management.
+
+Important capabilities include:
+
+- Managed database clusters.
+- Automated backups.
+- Monitoring and performance insights.
+- Horizontal scaling through sharding.
+- Network access controls.
+- Database alerts.
+- Cloud deployment across supported providers.
+
+MongoDB Atlas is commonly used to operate MongoDB applications without managing all database infrastructure manually.
+
+---
+
+# Redis Knowledge Base
+
+## 26. What is Redis?
+
+Redis is an in-memory data store commonly used for caching, session storage, queues, and fast data access.
+
+It stores data primarily in memory, which enables very low-latency operations.
+
+Redis supports several data structures:
+
+- Strings.
+- Lists.
+- Sets.
+- Sorted Sets.
+- Hashes.
+- Streams.
+- Bitmaps.
+- HyperLogLogs.
+
+### Common Redis Use Cases
+
+- Caching frequently accessed database records.
+- Storing user sessions.
+- Rate limiting.
+- Real-time leaderboards.
+- Background job queues.
+- Pub/Sub messaging.
+- Temporary authentication tokens.
+
+### Redis Caching Example
+
+```javascript
+const cachedUser = await redis.get("user:123");
+
+if (cachedUser) {
+  return JSON.parse(cachedUser);
+}
+
+const user = await User.findById("123");
+
+await redis.set(
+  "user:123",
+  JSON.stringify(user),
+  "EX",
+  300
+);
+
+return user;
+```
+
+This example checks Redis before querying MongoDB. If the data is not cached, it fetches the user from MongoDB and stores the result in Redis for five minutes.
+
+## 27. Redis Persistence
+
+Although Redis primarily stores data in memory, it supports persistence mechanisms.
+
+**RDB (Redis Database Backup):** Creates point-in-time snapshots of the dataset.
+
+**AOF (Append Only File):** Records write operations so Redis can reconstruct data after restart.
+
+Redis can use either persistence method or both, depending on durability requirements.
+
+---
+
+# General Database Reliability and Monitoring
+
+## 28. Database Health Monitoring
+
+Database monitoring is the process of collecting, analyzing, and alerting on metrics related to database availability, performance, and reliability.
+
+Important monitoring categories:
+
+- Availability and uptime.
+- CPU and memory utilization.
+- Disk capacity and I/O.
+- Database connections.
+- Query latency.
+- Slow queries.
+- Replication health.
+- Error rates.
+- Cache hit ratios.
+- Backup success and recovery readiness.
+
+Monitoring tools can collect metrics from database servers and display them through dashboards.
+
+## 29. Automated Database Operations
+
+Automation reduces manual operational work and improves reliability.
+
+Common automated database operations include:
+
+- Periodic health checks.
+- Disk and memory utilization monitoring.
+- Connection monitoring.
+- Replication health validation.
+- Automated alerts.
+- Backup verification.
+- Cluster capacity checks.
+- Configuration compliance checks.
+- Incident creation in ticketing systems.
+- Safe remediation of known failure scenarios.
+
+### Self-Healing Database Systems
+
+A self-healing system detects known problems and attempts predefined corrective actions automatically.
+
+Example workflow:
+
+1. A monitoring service checks database availability.
+2. It detects that a database node is not responding.
+3. The system classifies the failure.
+4. It checks whether the issue is transient or persistent.
+5. It executes an approved remediation action when safe.
+6. It validates whether the database has recovered.
+7. If recovery fails, it raises an alert or creates an incident.
+
+Automated remediation should include authorization checks, retry limits, audit logs, and safeguards to prevent unsafe operations.
+
+## 30. Important Database Reliability Concepts
+
+**High Availability:** Designing systems to minimize downtime.
+
+**Fault Tolerance:** The ability to continue operating despite component failures.
+
+**Horizontal Scaling:** Increasing capacity by adding more machines.
+
+**Vertical Scaling:** Increasing the resources of an existing machine.
+
+**Replication:** Maintaining multiple copies of data across database servers.
+
+**Sharding:** Distributing data across multiple database servers.
+
+**Failover:** Switching to another available database node when the current primary fails.
+
+**Backup:** Creating copies of database data for recovery.
+
+**Recovery Point Objective (RPO):** The maximum acceptable amount of data loss measured in time.
+
+**Recovery Time Objective (RTO):** The maximum acceptable time required to restore a service after failure.
+
+**Idempotency:** Ensuring that repeating an operation does not produce unintended additional effects.
+
+**Observability:** Understanding system behavior through metrics, logs, and traces.
+
+**Scalability:** The ability of a system to handle increased workload by adding resources or distributing work.
+
+# End of Knowledge Base
