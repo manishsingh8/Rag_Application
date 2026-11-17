@@ -7,17 +7,18 @@ from langgraph.graph import StateGraph, START, END
 from pydantic import BaseModel, Field
 from rag_chain import llm
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+
+from rag_chain import llm
 
 
 MAX_RETRIES = 2
 
 class RAGState(TypedDict):
     question: str
+    search_query: str  # New field
 
-    # Original retrieved documents
     documents: list[Document]
-
-    # Documents that pass relevance grading
     relevant_documents: list[Document]
 
     answer: str
@@ -79,13 +80,112 @@ grading_prompt = ChatPromptTemplate.from_messages([
     )
 ])
 
+query_rewrite_prompt = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """
+        You are an expert query rewriting assistant
+        for a Retrieval-Augmented Generation application.
+
+        Your task is to rewrite the user's question
+        into a better search query for a vector database.
+
+        Follow these rules carefully:
+
+        1. Preserve the exact meaning and intent
+           of the original question.
+
+        2. Make vague questions clearer and more specific
+           without changing their meaning.
+
+        3. Preserve important technical terms,
+           entities, and constraints.
+
+        4. Use natural language rather than generating
+           a list of disconnected keywords.
+
+        5. Do not introduce unrelated technologies,
+           features, or assumptions.
+
+        6. Do not narrow a general question into a
+           specific technical topic unless the user
+           explicitly indicates that topic.
+
+        7. Do not answer the question.
+
+        8. Keep the rewritten query concise,
+           preferably one sentence.
+
+        9. If the original question is already clear,
+           preserve it with minimal changes.
+
+        Return ONLY the rewritten search query.
+        """
+    ),
+    (
+        "human",
+        """
+        Original question:
+        {question}
+
+        Rewritten search query:
+        """
+    )
+])
+
+
+query_rewrite_chain = (
+    query_rewrite_prompt
+    | llm
+    | StrOutputParser()
+)
+
+
+def transform_query(state: RAGState):
+
+    print("\n--- Transforming User Query ---")
+
+    original_question = state["question"]
+
+    try:
+        optimized_query = query_rewrite_chain.invoke({
+            "question": original_question
+        })
+
+        optimized_query = optimized_query.strip()
+
+        if not optimized_query:
+            raise ValueError("LLM returned an empty search query")
+
+        print(f"Original Query: {original_question}")
+        print(f"Optimized Query: {optimized_query}")
+
+        return {
+            "search_query": optimized_query
+        }
+
+    except Exception as error:
+
+        print(f"Query transformation failed: {error}")
+        print("Using original question for retrieval.")
+
+        return {
+            "search_query": original_question
+        }
+
 
 def retrieve_documents(state: RAGState):
+
     print("\n--- Retrieving Documents ---")
 
-    question = state["question"]
+    search_query = state.get(
+        "search_query",
+        state["question"]
+    )
 
-    documents = retriever.invoke(question)
+    print(f"Search Query: {search_query}")
+
+    documents = retriever.invoke(search_query)
 
     print(f"Retrieved {len(documents)} documents")
 
@@ -156,15 +256,124 @@ def grade_documents(state: RAGState):
     }
 
 
+import re
+
+def validate_answer(state: RAGState):
+    print("\n--- Validating Answer ---")
+
+    answer = state.get("answer", "").strip()
+    citations = state.get("citations", [])
+    evidence_status = state.get("evidence_status", "")
+
+    documents = state.get("relevant_documents", [])
+
+    valid_citations = {
+        f"Source {index}"
+        for index in range(1, len(documents) + 1)
+    }
+
+    # Normalize structured citations
+    normalized_citations = {
+        citation.strip().strip("[]")
+        for citation in citations
+    }
+
+    # Extract inline citations from the generated answer
+    inline_citations = {
+        citation.strip()
+        for citation in re.findall(
+            r"\[Source\s+\d+\]",
+            answer
+        )
+    }
+
+    inline_citations = {
+        citation.strip("[]")
+        for citation in inline_citations
+    }
+
+    errors = []
+
+    # 1. Answer validation
+    if not answer:
+        errors.append("Generated answer is empty.")
+
+    # 2. Citation reference validation
+    invalid_citations = normalized_citations - valid_citations
+
+    if invalid_citations:
+        errors.append(
+            f"Invalid citations: {list(invalid_citations)}"
+        )
+
+    # 3. Inline citation validation
+    invalid_inline_citations = inline_citations - valid_citations
+
+    if invalid_inline_citations:
+        errors.append(
+            f"Invalid inline citations: {list(invalid_inline_citations)}"
+        )
+
+    # 4. Check whether inline citations match structured citations
+    if inline_citations != normalized_citations:
+        errors.append(
+            "Inline citations do not match structured citations."
+        )
+
+    # 5. Evidence status validation
+    if evidence_status == "supported":
+        if not normalized_citations:
+            errors.append(
+                "Supported answer must contain citations."
+            )
+
+        if not inline_citations:
+            errors.append(
+                "Supported answer must contain inline citations."
+            )
+
+    elif evidence_status == "insufficient_evidence":
+        if normalized_citations or inline_citations:
+            errors.append(
+                "Insufficient-evidence answer must not contain citations."
+            )
+
+    else:
+        errors.append("Invalid evidence status.")
+
+    # 6. Final validation result
+    is_valid = len(errors) == 0
+
+    retry_count = state.get("retry_count", 0)
+
+    if not is_valid:
+        retry_count += 1
+
+    print("\n--- Validation Results ---")
+    print(f"Evidence Status: {evidence_status}")
+    print(f"Structured Citations: {normalized_citations}")
+    print(f"Inline Citations: {inline_citations}")
+
+    if errors:
+        for error in errors:
+            print(f"Validation Error: {error}")
+    else:
+        print("All validation checks passed.")
+
+    return {
+        "is_valid": is_valid,
+        "validation_errors": errors,
+        "retry_count": retry_count
+    }
+
 def generate_answer(state: RAGState):
 
     print("\n--- Generating Answer ---")
 
     question = state["question"]
     documents = state["relevant_documents"]
-    print(
-    f"Documents passed to LLM: {len(documents)}"
-    )
+
+    print(f"Documents passed to LLM: {len(documents)}")
 
     context = format_documents(documents)
 
@@ -184,59 +393,32 @@ def generate_answer(state: RAGState):
         "context": context
     }
 
-    response = (prompt | structured_llm).invoke(prompt_input)
+    try:
+        response = (prompt | structured_llm).invoke(prompt_input)
 
-    return {
-        "answer": response.answer,
-        "citations": response.citations,
-        "evidence_status": response.evidence_status
-    }
+        if response is None:
+            raise ValueError("LLM returned an empty response")
 
-def validate_answer(state: RAGState):
-    print("\n--- Validating Answer ---")
+        print("\nStructured response generated successfully.")
 
-    documents = state["relevant_documents"]
-    citations = state["citations"]
-    evidence_status = state["evidence_status"]
+        return {
+            "answer": response.answer,
+            "citations": response.citations,
+            "evidence_status": response.evidence_status,
+            "generation_error": ""
+        }
 
-    valid_citations = {
-        f"Source {index}"
-        for index in range(1, len(documents) + 1)
-    }
+    except Exception as error:
 
-    normalized_citations = {
-        citation.strip().strip("[]")
-        for citation in citations
-    }
+        print("\n--- Generation Error ---")
+        print(f"{type(error).__name__}: {error}")
 
-    errors = []
-
-    invalid_citations = normalized_citations - valid_citations
-
-    if invalid_citations:
-        errors.append(f"Invalid citations: {list(invalid_citations)}")
-
-    if evidence_status == "supported" and not citations:
-        errors.append("Supported answer must contain citations.")
-
-    if evidence_status == "insufficient_evidence" and citations:
-        errors.append("Insufficient-evidence answer should not contain citations.")
-
-    if evidence_status not in {"supported", "insufficient_evidence"}:
-        errors.append("Invalid evidence status.")
-
-    is_valid = len(errors) == 0
-
-    retry_count = state["retry_count"]
-
-    if not is_valid:
-        retry_count += 1
-
-    return {
-        "is_valid": is_valid,
-        "validation_errors": errors,
-        "retry_count": retry_count
-    }
+        return {
+            "answer": "",
+            "citations": [],
+            "evidence_status": "",
+            "generation_error": str(error)
+        }
 
 def route_after_grading(state: RAGState):
 
@@ -300,6 +482,7 @@ def handle_invalid_answer(state: RAGState):
 graph_builder = StateGraph(RAGState)
 
 # Register nodes
+graph_builder.add_node("transform_query",transform_query)
 graph_builder.add_node("retrieve_documents", retrieve_documents)
 graph_builder.add_node("grade_documents",grade_documents)
 graph_builder.add_node("generate_answer", generate_answer)
@@ -310,6 +493,11 @@ graph_builder.add_node("handle_no_relevant_documents",handle_no_relevant_documen
 # Normal edges
 graph_builder.add_edge(
     START,
+    "transform_query"
+)
+
+graph_builder.add_edge(
+    "transform_query",
     "retrieve_documents"
 )
 
