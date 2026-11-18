@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 from rag_chain import llm
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-
+from langfuse_config import langfuse, langfuse_handler
+import re
 from rag_chain import llm
 
 
@@ -182,12 +183,23 @@ def retrieve_documents(state: RAGState):
         "search_query",
         state["question"]
     )
-
-    print(f"Search Query: {search_query}")
-
-    documents = retriever.invoke(search_query)
-
-    print(f"Retrieved {len(documents)} documents")
+    with langfuse.start_as_current_observation(
+        as_type="retriever",
+        name="retrieve_documents",
+        input={
+            "search_queries": search_query
+        }
+    ) as span:
+        print("\n--- Retrieving Documents ---")
+        print(f"Search Query: {search_query}")
+        documents = retriever.invoke(search_query)
+        print(f"Retrieved {len(documents)} documents")
+        span.update(
+                output={
+                    "total_retrieved": len(documents),
+                    "search_queries": search_query
+                }
+            )    
 
     return {
         "documents": documents
@@ -255,8 +267,6 @@ def grade_documents(state: RAGState):
         "relevant_documents": relevant_documents
     }
 
-
-import re
 
 def validate_answer(state: RAGState):
     print("\n--- Validating Answer ---")
@@ -366,6 +376,65 @@ def validate_answer(state: RAGState):
         "retry_count": retry_count
     }
 
+def normalize_citations(
+    answer: str,
+    citations: list[str],
+    document_count: int
+):
+    normalized_citations = []
+
+    for citation in citations or []:
+
+        citation = str(citation).strip()
+
+        # Accept "1", "Source 1", and "[Source 1]"
+        match = re.fullmatch(
+            r"\[?\s*(?:Source\s*)?(\d+)\s*\]?",
+            citation,
+            flags=re.IGNORECASE
+        )
+
+        if match:
+            citation_number = int(match.group(1))
+
+            # Citation must refer to an existing context document.
+            if 1 <= citation_number <= document_count:
+                normalized_citations.append(
+                    f"Source {citation_number}"
+                )
+            else:
+                # Keep invalid citation visible to the validator.
+                normalized_citations.append(citation)
+        else:
+            normalized_citations.append(citation)
+
+    # Remove duplicate citation IDs while preserving order.
+    normalized_citations = list(dict.fromkeys(normalized_citations))
+
+    # Normalize inline citations such as [1] to [Source 1].
+    answer = re.sub(
+        r"\[(\d+)\]",
+        lambda match: f"[Source {match.group(1)}]",
+        answer
+    )
+
+    # Add missing inline citations for valid structured citations.
+    inline_citations = set(
+        re.findall(r"\[Source\s+\d+\]", answer)
+    )
+
+    missing_citations = [
+        f"[{citation}]"
+        for citation in normalized_citations
+        if re.fullmatch(r"Source \d+", citation)
+        and f"[{citation}]" not in inline_citations
+    ]
+
+    if missing_citations:
+        answer = answer.rstrip() + " " + " ".join(missing_citations)
+
+    return answer, normalized_citations
+
 def generate_answer(state: RAGState):
 
     print("\n--- Generating Answer ---")
@@ -398,14 +467,20 @@ def generate_answer(state: RAGState):
 
         if response is None:
             raise ValueError("LLM returned an empty response")
+        
+        answer, citations = normalize_citations(
+        answer=response.answer,
+        citations=response.citations,
+        document_count=len(documents)
+         )
 
         print("\nStructured response generated successfully.")
 
         return {
-            "answer": response.answer,
-            "citations": response.citations,
-            "evidence_status": response.evidence_status,
-            "generation_error": ""
+        "answer": answer,
+        "citations": citations,
+        "evidence_status": response.evidence_status,
+        "generation_error": ""
         }
 
     except Exception as error:
@@ -574,14 +649,28 @@ if __name__ == "__main__":
         }
 
         try:
-            result = rag_graph.invoke(initial_state)
+            result = rag_graph.invoke(
+                initial_state,
+                config={
+                    "callbacks": [langfuse_handler],
+                    "run_name": "RAG Pipeline",
+                    "tags": ["rag", "langgraph"],
+                    "metadata": {
+                        "environment": "development"
+                    }
+                }
+            )
 
             print("\n--- Assistant Response ---")
             print("Answer:", result["answer"])
             print("Citations:", result["citations"])
             print("Evidence Status:", result["evidence_status"])
 
+            # Ensure trace events are sent in this console application
+            langfuse.flush()
+
         except Exception as exc:
             print("\nError:", exc)
+
 
 
