@@ -2,12 +2,16 @@
 import os
 
 from dotenv import load_dotenv
+load_dotenv()
+
 from langchain_openrouter import ChatOpenRouter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langfuse_config import langfuse_handler
 
 
-load_dotenv()
+
+
 
 api_key = os.getenv("OPENROUTER_API_KEY")
 
@@ -44,6 +48,16 @@ parser = StrOutputParser()
 # 4. Connect the components
 chain = prompt | model | parser
 
+
+# Your LangChain chain
+response = chain.invoke(
+    {"question": "What is MongoDB indexing?"},
+    config={
+        "callbacks": [langfuse_handler]
+    }
+)
+
+print(response)
 
 # 5. Run the chat loop
 while True:
