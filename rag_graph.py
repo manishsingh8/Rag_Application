@@ -13,12 +13,9 @@ import re
 from rag_chain import llm
 
 
-MAX_RETRIES = 2
-
 class RAGState(TypedDict):
     question: str
-    search_query: str  # New field
-
+    search_query: str
     documents: list[Document]
     relevant_documents: list[Document]
 
@@ -26,11 +23,47 @@ class RAGState(TypedDict):
     citations: list[str]
     evidence_status: str
 
+    # Answer validation
     retry_count: int
     is_valid: bool
     validation_errors: list[str]
-    generation_error: str
 
+    # LLM Judge evaluation
+    faithfulness_score: int
+    answer_relevance_score: int
+    unsupported_claims: list[str]
+    judge_passed: bool
+    evaluation_reasoning: str
+
+    # NEW: Self-correction
+    generation_feedback: str
+    judge_retry_count: int
+
+
+class RAGEvaluation(BaseModel):
+
+    faithfulness_score: int = Field(
+        ge=1,
+        le=5,
+        description="How well the answer is supported by the context. 1 is completely unsupported; 5 is fully supported."
+    )
+
+    answer_relevance_score: int = Field(
+        ge=1,
+        le=5,
+        description="How well the answer addresses the user's question. 1 is irrelevant; 5 is highly relevant."
+    )
+
+    unsupported_claims: list[str] = Field(
+        description="Claims in the answer that are not supported by the provided context."
+    )
+
+    reasoning: str = Field(
+        description="Explain why these scores were assigned using the provided evidence."
+    )
+
+MAX_RETRIES = 2
+MAX_JUDGE_RETRIES = 2
 
 retriever = get_retriever()
 
@@ -133,14 +166,130 @@ query_rewrite_prompt = ChatPromptTemplate.from_messages([
         """
     )
 ])
-
-
 query_rewrite_chain = (
     query_rewrite_prompt
     | llm
     | StrOutputParser()
 )
 
+judge_prompt = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """
+        You are an expert evaluator for a Retrieval Augmented Generation system.
+
+        Evaluate the generated answer using ONLY the supplied context.
+
+        Evaluation rules:
+
+        1. Faithfulness:
+           - Check whether every factual claim is supported by the context.
+           - Identify unsupported or contradictory claims.
+           - Do not use your pretrained knowledge as evidence.
+
+        2. Answer relevance:
+           - Check whether the answer addresses the user's question.
+           - Penalize irrelevant or incomplete answers.
+
+        3. If the answer correctly says that there is insufficient
+           information, do not penalize it for not answering unsupported details.
+
+        4. Citations and formatting alone do not prove faithfulness.
+
+        5. Be strict and evidence-based.
+        """
+    ),
+    (
+        "human",
+        """
+        User Question:
+        {question}
+
+        Retrieved Context:
+        {context}
+
+        Generated Answer:
+        {answer}
+
+        Evaluate the answer.
+        """
+    )
+])
+
+
+
+judge_llm = llm.with_structured_output(
+    RAGEvaluation,
+    method="function_calling"
+)
+
+judge_chain = judge_prompt | judge_llm
+
+
+def run_llm_judge(question, answer, documents):
+
+    context = format_documents(documents)
+
+    with langfuse.start_as_current_observation(
+        as_type="span",
+        name="llm_as_judge",
+        input={
+            "question": question,
+            "answer": answer,
+            "documents_count": len(documents)
+        }
+    ) as span:
+
+        evaluation = judge_chain.invoke(
+            {
+                "question": question,
+                "answer": answer,
+                "context": context
+            },
+            config={"callbacks": [langfuse_handler]}
+        )
+
+        # Debugging
+        print("Judge returned:", repr(evaluation))
+        print("Judge return type:", type(evaluation))
+
+        if evaluation is None:
+            raise ValueError("LLM Judge returned None instead of RAGEvaluation.")
+
+        span.update(output=evaluation.model_dump())
+
+    return evaluation
+
+def evaluate_answer(question, answer, documents):
+
+    context = format_documents(documents)
+
+    with langfuse.start_as_current_observation(
+        as_type="span",
+        name="llm_as_judge",
+        input={
+            "question": question,
+            "answer": answer,
+            "documents_count": len(documents)
+        }
+    ) as span:
+
+        evaluation = judge_chain.invoke(
+            {
+                "question": question,
+                "answer": answer,
+                "context": context
+            },
+            config={
+                "callbacks": [langfuse_handler]
+            }
+        )
+
+        span.update(
+            output=evaluation.model_dump()
+        )
+
+        return evaluation
 
 def transform_query(state: RAGState):
 
@@ -174,7 +323,6 @@ def transform_query(state: RAGState):
             "search_query": original_question
         }
 
-
 def retrieve_documents(state: RAGState):
 
     print("\n--- Retrieving Documents ---")
@@ -205,7 +353,6 @@ def retrieve_documents(state: RAGState):
         "documents": documents
     }
 
-
 def grade_documents(state: RAGState):
 
     print("\n--- Grading Retrieved Documents ---")
@@ -213,50 +360,71 @@ def grade_documents(state: RAGState):
     question = state["question"]
     documents = state["documents"]
 
-    relevant_documents = []
+    with langfuse.start_as_current_observation(
+        as_type="span",
+        name="grade_documents",
+        input={
+            "question": question,
+            "documents_count": len(documents)
+        }
+    ) as span:
+         print("\n--- Grading Retrieved Documents ---")
 
-    for index, document in enumerate(documents, start=1):
+         relevant_documents = []
 
-        print(f"\nGrading Document {index}")
 
-        result = None
+         for index, document in enumerate(documents, start=1):
 
-        # Allow one additional attempt if the grader returns None
-        for attempt in range(2):
+            print(f"\nGrading Document {index}")
 
-            try:
-                result = (grading_prompt | grader_llm).invoke({
-                    "question": question,
-                    "document": document.page_content
-                })
+            result = None
 
-                if result is not None:
-                    break
+            # Allow one additional attempt if the grader returns None
+            for attempt in range(2):
 
+                try:
+                    result = (grading_prompt | grader_llm).invoke({
+                        "question": question,
+                        "document": document.page_content
+                    })
+
+                    if result is not None:
+                        break
+
+                    print(
+                        f"Grader returned None. "
+                        f"Attempt {attempt + 1}"
+                    )
+
+                except Exception as error:
+                    print(
+                        f"Grading failed on attempt "
+                        f"{attempt + 1}: {error}"
+                    )
+
+            # Handle unsuccessful grading
+            if result is None:
                 print(
-                    f"Grader returned None. "
-                    f"Attempt {attempt + 1}"
+                    f"Document {index} skipped because "
+                    "grading failed."
                 )
+                continue
 
-            except Exception as error:
-                print(
-                    f"Grading failed on attempt "
-                    f"{attempt + 1}: {error}"
+            print("Relevant:", result.is_relevant)
+            print("Reason:", result.reason)
+
+            if result.is_relevant:
+                relevant_documents.append(document)
+
+         span.update(
+            output={
+                "total_documents": len(documents),
+                "relevant_documents": len(relevant_documents),
+                "rejected_documents": (
+                    len(documents) - len(relevant_documents)
                 )
-
-        # Handle unsuccessful grading
-        if result is None:
-            print(
-                f"Document {index} skipped because "
-                "grading failed."
-            )
-            continue
-
-        print("Relevant:", result.is_relevant)
-        print("Reason:", result.reason)
-
-        if result.is_relevant:
-            relevant_documents.append(document)
+            }
+        )        
 
     print(
         f"\nRelevant documents: "
@@ -267,109 +435,124 @@ def grade_documents(state: RAGState):
         "relevant_documents": relevant_documents
     }
 
-
 def validate_answer(state: RAGState):
     print("\n--- Validating Answer ---")
 
-    answer = state.get("answer", "").strip()
-    citations = state.get("citations", [])
-    evidence_status = state.get("evidence_status", "")
-
-    documents = state.get("relevant_documents", [])
-
-    valid_citations = {
-        f"Source {index}"
-        for index in range(1, len(documents) + 1)
+    with langfuse.start_as_current_observation(
+    as_type="span",
+    name="validate_answer",
+    input={
+        "answer": state["answer"],
+        "citations": state["citations"],
+        "evidence_status": state["evidence_status"]
     }
+    ) as span:
 
-    # Normalize structured citations
-    normalized_citations = {
-        citation.strip().strip("[]")
-        for citation in citations
-    }
+        answer = state.get("answer", "").strip()
+        citations = state.get("citations", [])
+        evidence_status = state.get("evidence_status", "")
 
-    # Extract inline citations from the generated answer
-    inline_citations = {
-        citation.strip()
-        for citation in re.findall(
-            r"\[Source\s+\d+\]",
-            answer
-        )
-    }
+        documents = state.get("relevant_documents", [])
 
-    inline_citations = {
-        citation.strip("[]")
-        for citation in inline_citations
-    }
+        valid_citations = {
+            f"Source {index}"
+            for index in range(1, len(documents) + 1)
+        }
 
-    errors = []
+        # Normalize structured citations
+        normalized_citations = {
+            citation.strip().strip("[]")
+            for citation in citations
+        }
 
-    # 1. Answer validation
-    if not answer:
-        errors.append("Generated answer is empty.")
+        # Extract inline citations from the generated answer
+        inline_citations = {
+            citation.strip()
+            for citation in re.findall(
+                r"\[Source\s+\d+\]",
+                answer
+            )
+        }
 
-    # 2. Citation reference validation
-    invalid_citations = normalized_citations - valid_citations
+        inline_citations = {
+            citation.strip("[]")
+            for citation in inline_citations
+        }
 
-    if invalid_citations:
-        errors.append(
-            f"Invalid citations: {list(invalid_citations)}"
-        )
+        errors = []
 
-    # 3. Inline citation validation
-    invalid_inline_citations = inline_citations - valid_citations
+        # 1. Answer validation
+        if not answer:
+            errors.append("Generated answer is empty.")
 
-    if invalid_inline_citations:
-        errors.append(
-            f"Invalid inline citations: {list(invalid_inline_citations)}"
-        )
+        # 2. Citation reference validation
+        invalid_citations = normalized_citations - valid_citations
 
-    # 4. Check whether inline citations match structured citations
-    if inline_citations != normalized_citations:
-        errors.append(
-            "Inline citations do not match structured citations."
-        )
-
-    # 5. Evidence status validation
-    if evidence_status == "supported":
-        if not normalized_citations:
+        if invalid_citations:
             errors.append(
-                "Supported answer must contain citations."
+                f"Invalid citations: {list(invalid_citations)}"
             )
 
-        if not inline_citations:
+        # 3. Inline citation validation
+        invalid_inline_citations = inline_citations - valid_citations
+
+        if invalid_inline_citations:
             errors.append(
-                "Supported answer must contain inline citations."
+                f"Invalid inline citations: {list(invalid_inline_citations)}"
             )
 
-    elif evidence_status == "insufficient_evidence":
-        if normalized_citations or inline_citations:
+        # 4. Check whether inline citations match structured citations
+        if inline_citations != normalized_citations:
             errors.append(
-                "Insufficient-evidence answer must not contain citations."
+                "Inline citations do not match structured citations."
             )
 
-    else:
-        errors.append("Invalid evidence status.")
+        # 5. Evidence status validation
+        if evidence_status == "supported":
+            if not normalized_citations:
+                errors.append(
+                    "Supported answer must contain citations."
+                )
 
-    # 6. Final validation result
-    is_valid = len(errors) == 0
+            if not inline_citations:
+                errors.append(
+                    "Supported answer must contain inline citations."
+                )
 
-    retry_count = state.get("retry_count", 0)
+        elif evidence_status == "insufficient_evidence":
+            if normalized_citations or inline_citations:
+                errors.append(
+                    "Insufficient-evidence answer must not contain citations."
+                )
 
-    if not is_valid:
-        retry_count += 1
+        else:
+            errors.append("Invalid evidence status.")
 
-    print("\n--- Validation Results ---")
-    print(f"Evidence Status: {evidence_status}")
-    print(f"Structured Citations: {normalized_citations}")
-    print(f"Inline Citations: {inline_citations}")
+        # 6. Final validation result
+        is_valid = len(errors) == 0
 
-    if errors:
-        for error in errors:
-            print(f"Validation Error: {error}")
-    else:
-        print("All validation checks passed.")
+        retry_count = state.get("retry_count", 0)
 
+        if not is_valid:
+            retry_count += 1
+
+        print("\n--- Validation Results ---")
+        print(f"Evidence Status: {evidence_status}")
+        print(f"Structured Citations: {normalized_citations}")
+        print(f"Inline Citations: {inline_citations}")
+
+        if errors:
+            for error in errors:
+                print(f"Validation Error: {error}")
+        else:
+            print("All validation checks passed.")
+
+    span.update(
+        output={
+            "is_valid": is_valid,
+            "validation_errors": errors
+        }
+    )
     return {
         "is_valid": is_valid,
         "validation_errors": errors,
@@ -445,7 +628,7 @@ def generate_answer(state: RAGState):
     print(f"Documents passed to LLM: {len(documents)}")
 
     context = format_documents(documents)
-
+    # Existing citation/structure validation feedback
     validation_errors = state.get("validation_errors", [])
 
     retry_instruction = ""
@@ -457,9 +640,20 @@ def generate_answer(state: RAGState):
             + "\nCorrect these issues. Use only valid source citations."
         )
 
+    # NEW: LLM Judge feedback
+    generation_feedback = state.get("generation_feedback", "")
+
+    if generation_feedback:
+        print("\n--- Applying LLM Judge Feedback ---")
+        print(generation_feedback)
+
+    # Combine validation and judge feedback
+    final_question = question + retry_instruction
+
     prompt_input = {
-        "question": question + retry_instruction,
-        "context": context
+        "question": final_question,
+        "context": context,
+        "generation_feedback": generation_feedback or "No previous feedback. This is the first generation attempt."
     }
 
     try:
@@ -467,20 +661,20 @@ def generate_answer(state: RAGState):
 
         if response is None:
             raise ValueError("LLM returned an empty response")
-        
+
         answer, citations = normalize_citations(
-        answer=response.answer,
-        citations=response.citations,
-        document_count=len(documents)
-         )
+            answer=response.answer,
+            citations=response.citations,
+            document_count=len(documents)
+        )
 
         print("\nStructured response generated successfully.")
 
         return {
-        "answer": answer,
-        "citations": citations,
-        "evidence_status": response.evidence_status,
-        "generation_error": ""
+            "answer": answer,
+            "citations": citations,
+            "evidence_status": response.evidence_status,
+            "generation_error": ""
         }
 
     except Exception as error:
@@ -494,6 +688,127 @@ def generate_answer(state: RAGState):
             "evidence_status": "",
             "generation_error": str(error)
         }
+
+def evaluate_answer_node(state: RAGState):
+
+    print("\n--- LLM-as-a-Judge Evaluation ---")
+
+    question = state["question"]
+    answer = state["answer"]
+    documents = state["relevant_documents"]
+
+    try:
+        evaluation = run_llm_judge(
+            question=question,
+            answer=answer,
+            documents=documents
+        )
+
+        print("Faithfulness:", evaluation.faithfulness_score)
+        print("Answer Relevance:", evaluation.answer_relevance_score)
+        print("Unsupported Claims:", evaluation.unsupported_claims)
+        print("Reasoning:", evaluation.reasoning)
+
+        judge_passed = (
+            evaluation.faithfulness_score >= 4
+            and evaluation.answer_relevance_score >= 4
+            and len(evaluation.unsupported_claims) == 0
+        )
+
+        # Build actionable feedback when the judge rejects an answer
+        generation_feedback = ""
+
+        if not judge_passed:
+
+            feedback_parts = []
+
+            if evaluation.unsupported_claims:
+                feedback_parts.append(
+                    "Unsupported claims that must be corrected:\n- "
+                    + "\n- ".join(evaluation.unsupported_claims)
+                )
+
+            if evaluation.faithfulness_score < 4:
+                feedback_parts.append(
+                    "Improve faithfulness. Every factual claim must "
+                    "be supported by the retrieved context."
+                )
+
+            if evaluation.answer_relevance_score < 4:
+                feedback_parts.append(
+                    "Improve answer relevance. Directly address the "
+                    "user's question."
+                )
+
+            feedback_parts.append(
+                "Judge reasoning:\n" + evaluation.reasoning
+            )
+
+            generation_feedback = "\n\n".join(feedback_parts)
+
+        return {
+            "faithfulness_score": evaluation.faithfulness_score,
+            "answer_relevance_score": evaluation.answer_relevance_score,
+            "unsupported_claims": evaluation.unsupported_claims,
+            "judge_passed": judge_passed,
+            "evaluation_reasoning": evaluation.reasoning,
+            "generation_feedback": generation_feedback
+        }
+
+    except Exception as error:
+
+        print(
+            f"LLM Judge Evaluation Error: "
+            f"{type(error).__name__}: {error}"
+        )
+
+        return {
+            "faithfulness_score": 0,
+            "answer_relevance_score": 0,
+            "unsupported_claims": [],
+            "judge_passed": False,
+            "evaluation_reasoning": (
+                f"Evaluation failed: {type(error).__name__}: {error}"
+            ),
+            "generation_feedback": (
+                "The previous answer could not be evaluated. "
+                "Do not assume it is correct. Generate a new answer "
+                "strictly from the retrieved context."
+            )
+        }
+
+def route_after_evaluation(state: RAGState):
+
+    print("\n--- Judge Routing Decision ---")
+
+    # Case 1: Judge approved the answer
+    if state.get("judge_passed", False):
+        print("Answer passed LLM Judge evaluation.")
+        return "approved"
+
+    # Case 2: Evaluation itself failed
+    if state.get("evaluation_reasoning", "").startswith(
+        "Evaluation failed:"
+    ):
+        print("LLM Judge evaluation failed.")
+        return "evaluation_error"
+
+    # Case 3: Check retry limit
+    judge_retry_count = state.get("judge_retry_count", 0)
+
+    if judge_retry_count < MAX_JUDGE_RETRIES:
+
+        print("Answer rejected by LLM Judge.")
+        print(f"Current retry count: {judge_retry_count}")
+        print("Regenerating answer...")
+
+        return "retry"
+
+    # Case 4: Maximum retries reached
+    print("Maximum judge retries reached.")
+    print("Stopping regeneration.")
+
+    return "max_retries_reached"
 
 def route_after_grading(state: RAGState):
 
@@ -551,6 +866,34 @@ def handle_invalid_answer(state: RAGState):
         "evidence_status": "insufficient_evidence"
     }
 
+def handle_judge_retry(state: RAGState):
+
+    current_retry = state.get("judge_retry_count", 0)
+
+    new_retry_count = current_retry + 1
+
+    print("\n--- Judge Retry Handler ---")
+    print(f"Starting retry attempt: {new_retry_count}")
+
+    return {
+        "judge_retry_count": new_retry_count
+    }
+
+def handle_max_judge_retries(state: RAGState):
+
+    print("\n--- Maximum Judge Retries Reached ---")
+
+    return {
+        "answer": (
+            "I couldn't generate a sufficiently reliable answer "
+            "from the available knowledge base. Please try "
+            "rephrasing your question or provide more information."
+        ),
+        "citations": [],
+        "evidence_status": "insufficient_evidence",
+        "generation_feedback": "",
+        "judge_passed": False
+    }
 
 
 # Create graph
@@ -562,8 +905,11 @@ graph_builder.add_node("retrieve_documents", retrieve_documents)
 graph_builder.add_node("grade_documents",grade_documents)
 graph_builder.add_node("generate_answer", generate_answer)
 graph_builder.add_node("validate_answer", validate_answer)
+graph_builder.add_node("evaluate_answer", evaluate_answer_node)
 graph_builder.add_node("handle_invalid_answer", handle_invalid_answer)
 graph_builder.add_node("handle_no_relevant_documents",handle_no_relevant_documents)
+graph_builder.add_node("handle_judge_retry",handle_judge_retry)
+graph_builder.add_node("handle_max_judge_retries",handle_max_judge_retries)
 
 # Normal edges
 graph_builder.add_edge(
@@ -602,10 +948,26 @@ graph_builder.add_conditional_edges(
     "validate_answer",
     route_after_validation,
     {
-        "valid": END,
+        "valid": "evaluate_answer",
         "retry": "generate_answer",
         "invalid": "handle_invalid_answer"
     }
+)
+
+graph_builder.add_conditional_edges(
+    "evaluate_answer",
+    route_after_evaluation,
+    {
+        "approved": END,
+        "retry": "handle_judge_retry",
+        "evaluation_error": "handle_invalid_answer",
+        "max_retries_reached": "handle_max_judge_retries"
+    }
+)
+
+graph_builder.add_edge(
+    "handle_judge_retry",
+    "generate_answer"
 )
 
 graph_builder.add_edge(
@@ -615,6 +977,10 @@ graph_builder.add_edge(
 
 graph_builder.add_edge(
     "handle_no_relevant_documents",
+    END
+)
+graph_builder.add_edge(
+    "handle_max_judge_retries",
     END
 )
 
@@ -645,7 +1011,14 @@ if __name__ == "__main__":
             "evidence_status": "",
             "retry_count": 0,
             "is_valid": False,
-            "validation_errors": []
+            "validation_errors": [],
+            "faithfulness_score": 0,
+            "answer_relevance_score": 0,
+            "unsupported_claims": [],
+            "judge_passed": False,
+            "evaluation_reasoning": "",
+            "generation_feedback": "",
+            "judge_retry_count": 0,
         }
 
         try:
